@@ -42,7 +42,7 @@ class _HomeTabState extends State<HomeTab> {
     final url = _controller.text.trim();
     if (url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please paste a social media link first')),
+        SnackBar(content: Text('err_empty_url'.trans())),
       );
       return;
     }
@@ -50,15 +50,20 @@ class _HomeTabState extends State<HomeTab> {
     FocusScope.of(context).unfocus();
     setState(() => _isExtracting = true);
 
-    // 1. Link parsing & extraction
-    final result = await MediaDownloaderService.extractMediaUrl(url);
+    DownloadedMediaResult? result;
+    String errorKey = 'err_extract_failed';
+    try {
+      result = await MediaDownloaderService.extractMediaUrl(url);
+    } on ExtractionFailure catch (e) {
+      errorKey = e.messageKey;
+    }
 
     setState(() => _isExtracting = false);
 
     if (result == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to parse URL. Make sure post is public.')),
+        SnackBar(content: Text(errorKey.trans())),
       );
       return;
     }
@@ -70,8 +75,10 @@ class _HomeTabState extends State<HomeTab> {
 
   void _showDownloadProgressDialog(DownloadedMediaResult result) {
     double progress = 0.0;
-    String progressText = "0%";
+    String progressText = '0%';
     bool isCompleted = false;
+    bool isFailed = false;
+    bool started = false;
 
     showDialog(
       context: context,
@@ -79,38 +86,52 @@ class _HomeTabState extends State<HomeTab> {
       builder: (context) {
         return StatefulBuilder(
           builder: (dialogContext, setDialogState) {
-            // Trigger download on first frame build safely
-            if (progress == 0.0 && !isCompleted) {
-              final ext = result.isVideo ? 'mp4' : 'jpg';
-              final fileName = 'download_${DateTime.now().millisecondsSinceEpoch}.$ext';
+            if (!started) {
+              started = true;
+              final fileName = MediaDownloaderService.safeFileName(
+                platform: result.platform,
+                extension: result.extension,
+              );
               MediaDownloaderService.downloadFile(
                 downloadUrl: result.directUrl,
                 fileName: fileName,
+                platform: result.platform,
+                type: result.type,
+                title: result.title,
                 onProgress: (received, total) {
                   if (total > 0) {
-                    final currentProgress = received / total;
+                    final currentProgress = (received / total).clamp(0.0, 0.99);
                     setDialogState(() {
                       progress = currentProgress;
                       progressText = '${(currentProgress * 100).toStringAsFixed(0)}%';
-                      if (currentProgress >= 1.0) {
-                        isCompleted = true;
-                      }
                     });
                   }
                 },
-              );
+              ).then((file) {
+                setDialogState(() {
+                  if (file != null) {
+                    progress = 1.0;
+                    progressText = '100%';
+                    isCompleted = true;
+                  } else {
+                    isFailed = true;
+                  }
+                });
+              });
             }
             return AlertDialog(
               backgroundColor: Theme.of(context).appColors.tileBg,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               title: Text(
-                isCompleted ? 'Download Complete!' : 'Downloading Media...',
+                isFailed
+                    ? 'err_download_failed'.trans()
+                    : (isCompleted ? 'download_complete'.trans() : 'downloading_media'.trans()),
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!isCompleted) ...[
+                  if (!isCompleted && !isFailed) ...[
                     LinearProgressIndicator(
                       value: progress > 0 ? progress : null,
                       color: kAccent,
@@ -121,19 +142,23 @@ class _HomeTabState extends State<HomeTab> {
                       progressText,
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
+                  ] else if (isFailed) ...[
+                    const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 50),
+                    const SizedBox(height: 8),
+                    Text('err_download_failed'.trans()),
                   ] else ...[
                     const Icon(Icons.check_circle_rounded, color: Colors.green, size: 50),
                     const SizedBox(height: 8),
-                    const Text('Saved to your device local documents directory.'),
+                    Text('saved_to_device'.trans()),
                   ]
                 ],
               ),
               actions: [
-                if (isCompleted)
+                if (isCompleted || isFailed)
                   TextButton(
                     onPressed: () {
                       Navigator.pop(context);
-                      _controller.clear();
+                      if (isCompleted) _controller.clear();
                     },
                     child: const Text('OK', style: TextStyle(color: kAccent)),
                   ),

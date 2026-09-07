@@ -24,6 +24,7 @@ class _NavItem {
 
 class _MainScreenState extends State<MainScreen> {
   int _index = 0;
+  final _downloadsKey = GlobalKey<DownloadsTabState>();
 
   static const _items = [
     _NavItem('Home', Icons.home_outlined, Icons.home_rounded),
@@ -40,11 +41,11 @@ class _MainScreenState extends State<MainScreen> {
       // blank hi rakhe (jaisa pehle sab tha), baad me unka content daalna.
       body: IndexedStack(
         index: _index,
-        children: const [
-          HomeTab(),
-          ShortsTab(),
-          WatchTab(),
-          DownloadsTab(),
+        children: [
+          const HomeTab(),
+          const ShortsTab(),
+          const WatchTab(),
+          DownloadsTab(key: _downloadsKey),
         ],
       ),
       bottomNavigationBar: SafeArea(
@@ -71,7 +72,10 @@ class _MainScreenState extends State<MainScreen> {
     final color = selected ? kAccent : onSurface.withOpacity(0.45);
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: () => setState(() => _index = i),
+      onTap: () {
+        setState(() => _index = i);
+        if (i == 3) _downloadsKey.currentState?.reload();
+      },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         child: Column(

@@ -1,20 +1,21 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
 import 'package:multilingual/extensions.dart';
-import 'package:path_provider/path_provider.dart';
 import 'theme.dart';
 import 'ad_placement.dart';
+import 'services/download_metadata_store.dart';
 
 class DownloadsTab extends StatefulWidget {
   const DownloadsTab({super.key});
 
   @override
-  State<DownloadsTab> createState() => _DownloadsTabState();
+  State<DownloadsTab> createState() => DownloadsTabState();
 }
 
 enum _MediaType { photos, video }
 
-class _DownloadsTabState extends State<DownloadsTab> {
+class DownloadsTabState extends State<DownloadsTab> {
   static const _platformKeys = [
     'social_whatsapp',
     'social_instagram',
@@ -22,10 +23,17 @@ class _DownloadsTabState extends State<DownloadsTab> {
     'social_pinterest',
   ];
   
+  static const _platformIds = [
+    'whatsapp',
+    'instagram',
+    'facebook',
+    'pinterest',
+  ];
+
   int _platformIndex = 0;
   _MediaType _type = _MediaType.photos;
   
-  List<FileSystemEntity> _downloadedFiles = [];
+  List<DownloadRecord> _records = [];
   bool _isLoading = true;
 
   @override
@@ -37,26 +45,63 @@ class _DownloadsTabState extends State<DownloadsTab> {
   Future<void> _loadLocalFiles() async {
     setState(() => _isLoading = true);
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      if (await dir.exists()) {
-        final List<FileSystemEntity> files = dir.listSync();
-        setState(() {
-          _downloadedFiles = files.where((file) {
-            final path = file.path.toLowerCase();
-            return path.endsWith('.mp4') || path.endsWith('.jpg') || path.endsWith('.png');
-          }).toList();
-        });
+      final all = await DownloadMetadataStore.loadAll();
+      final existing = <DownloadRecord>[];
+      for (final record in all) {
+        if (await File(record.filePath).exists()) {
+          existing.add(record);
+        }
       }
+      setState(() {
+        _records = existing;
+      });
     } catch (e) {
-      // Handle read errors gracefully
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
-  List<FileSystemEntity> get _filteredFiles {
-    return _downloadedFiles.where((file) {
-      final isVideo = file.path.toLowerCase().endsWith('.mp4');
+  Future<void> reload() => _loadLocalFiles();
+
+  bool _isVideo(DownloadRecord record) {
+    return record.type == 'video' ||
+        record.type == 'audio' ||
+        record.filePath.toLowerCase().endsWith('.mp4');
+  }
+
+  Future<void> _saveToDevice(DownloadRecord record) async {
+    try {
+      final allowed = await Gal.hasAccess() || await Gal.requestAccess();
+      if (!allowed) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('err_gallery_permission'.trans())),
+        );
+        return;
+      }
+      if (_isVideo(record)) {
+        await Gal.putVideo(record.filePath);
+      } else {
+        await Gal.putImage(record.filePath);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('saved_to_gallery'.trans())),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('err_save_gallery'.trans())),
+      );
+    }
+  }
+
+  List<DownloadRecord> get _filteredFiles {
+    final platform = _platformIds[_platformIndex];
+    return _records.where((record) {
+      if (record.platform.toLowerCase() != platform) return false;
+      final isVideo = record.type == 'video' || record.type == 'audio' ||
+          record.filePath.toLowerCase().endsWith('.mp4');
       return _type == _MediaType.video ? isVideo : !isVideo;
     }).toList();
   }
@@ -151,10 +196,12 @@ class _DownloadsTabState extends State<DownloadsTab> {
                           ),
                           itemCount: activeFiles.length,
                           itemBuilder: (context, index) {
-                            final file = activeFiles[index];
-                            final isVideo = file.path.toLowerCase().endsWith('.mp4');
+                            final record = activeFiles[index];
+                            final isVideo = _isVideo(record);
 
-                            return Container(
+                            return GestureDetector(
+                              onTap: () => _saveToDevice(record),
+                              child: Container(
                               decoration: BoxDecoration(
                                 color: colors.tileBg,
                                 borderRadius: BorderRadius.circular(12),
@@ -166,7 +213,7 @@ class _DownloadsTabState extends State<DownloadsTab> {
                                 children: [
                                   if (!isVideo)
                                     Image.file(
-                                      File(file.path),
+                                      File(record.filePath),
                                       fit: BoxFit.cover,
                                       errorBuilder: (_, __, ___) =>
                                           Icon(Icons.broken_image, color: onSurface.withOpacity(0.3)),
@@ -180,8 +227,7 @@ class _DownloadsTabState extends State<DownloadsTab> {
                                         size: 32,
                                       ),
                                     ),
-                                  
-                                  // Video Play Overlay Badge
+                                   
                                   if (isVideo)
                                     Center(
                                       child: Container(
@@ -198,14 +244,31 @@ class _DownloadsTabState extends State<DownloadsTab> {
                                       ),
                                     ),
 
-                                  // Delete Action
+                                  Positioned(
+                                    left: 4,
+                                    bottom: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.black54,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.save_alt_rounded,
+                                        color: Colors.white,
+                                        size: 14,
+                                      ),
+                                    ),
+                                  ),
+
                                   Positioned(
                                     top: 4,
                                     right: 4,
                                     child: GestureDetector(
                                       onTap: () async {
                                         try {
-                                          await file.delete();
+                                          await File(record.filePath).delete();
+                                          await DownloadMetadataStore.removeByPath(record.filePath);
                                           _loadLocalFiles();
                                         } catch (_) {}
                                       },
@@ -225,6 +288,7 @@ class _DownloadsTabState extends State<DownloadsTab> {
                                   ),
                                 ],
                               ),
+                            ),
                             );
                           },
                         ),
